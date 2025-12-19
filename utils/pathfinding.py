@@ -123,17 +123,28 @@ class PathFinder:
         return base + wait_bonus + dist_bonus + momentum_bonus
 
     def smart_astar(self, start, goal, blocked, robot):
-        """A* Algorithm พร้อม Enhanced Cost Calculation และ Route Optimization"""
+        """A* Algorithm พร้อม Hybrid Route System
+        - ใช้ Route System เมื่อไม่ติดขัด (wait_count == 0)
+        - Switch เป็นแบบเดิมเมื่อติดขัด (wait_count > 0)
+        """
         if start == goal:
             return []
         
-        # ลองใช้ cached route ก่อน (ถ้ามี)
-        if self.route_cache:
+        # ตรวจสอบว่า robot ติดขัดหรือไม่
+        is_stuck = robot.get("wait_count", 0) > 0
+        use_route_system = self.route_analyzer and not is_stuck
+        
+        # ลองใช้ cached route ก่อน (ถ้ามี และไม่ติดขัด)
+        if self.route_cache and not is_stuck:
             cached_path = self.route_cache.get(start, goal, robot.get("state", "IDLE"))
             if cached_path:
                 # ตรวจสอบว่า cached path ยังใช้ได้ (ไม่มี blocked positions)
                 if not any(p in blocked for p in cached_path):
                     return cached_path
+        
+        # ถ้าติดขัด ให้ invalidate cache สำหรับ position นี้
+        if is_stuck and self.route_cache:
+            self.route_cache.invalidate([start])
         
         # ทำนายตำแหน่งอนาคตของหุ่นยนต์อื่น
         future_predictions = self.predict_future_positions(robot, steps=5)
@@ -148,8 +159,8 @@ class PathFinder:
             if current == goal:
                 result_path = path + [current] if current != start else path
                 
-                # Cache the result
-                if self.route_cache and len(result_path) > 0:
+                # Cache the result (เฉพาะเมื่อไม่ติดขัด)
+                if self.route_cache and len(result_path) > 0 and not is_stuck:
                     self.route_cache.put(start, goal, robot.get("state", "IDLE"), result_path)
                 
                 return result_path
@@ -161,8 +172,8 @@ class PathFinder:
             
             directions = [(-1, 0), (1, 0), (0, -1), (0, 1)]
             
-            # ใช้ RouteAnalyzer เพื่อหา preferred direction
-            if self.route_analyzer:
+            # ใช้ RouteAnalyzer เฉพาะเมื่อไม่ติดขัด
+            if use_route_system:
                 preferred = self.route_analyzer.get_preferred_direction(current, goal, robot.get("state", "IDLE"))
                 if preferred != (0, 0):
                     # เรียงลำดับ: preferred > momentum > อื่นๆ
@@ -170,6 +181,7 @@ class PathFinder:
                 elif last_dir != (0, 0):
                     directions.sort(key=lambda d: 0 if d == last_dir else 1)
             elif last_dir != (0, 0):
+                # แบบเดิม: เรียงตาม momentum
                 directions.sort(key=lambda d: 0 if d == last_dir else 1)
             
             for dr, dc in directions:
@@ -233,19 +245,19 @@ class PathFinder:
                 elif corridor_score <= 2:
                     move_cost *= 1.3
                 
-                # 6. Highway Bonus (จาก RouteAnalyzer) - ลดลงเพื่อไม่ให้อ้อมมาก
-                if self.route_analyzer:
+                # 6. Highway Bonus (จาก RouteAnalyzer) - ใช้เฉพาะเมื่อไม่ติดขัด
+                if use_route_system:
                     highway_bonus = self.route_analyzer.get_highway_bonus(nxt)
                     if highway_bonus > 0:
-                        move_cost *= max(0.85, 1.0 - highway_bonus * 0.03)  # ลดจาก 0.08 -> 0.03
+                        move_cost *= max(0.85, 1.0 - highway_bonus * 0.03)
                     
-                    # Main Corridor Bonus (ลดลง)
+                    # Main Corridor Bonus
                     if self.route_analyzer.is_on_main_corridor(nxt):
-                        move_cost *= 0.92  # ลดจาก 0.75 -> 0.92
+                        move_cost *= 0.92
                 
                 # 7. Momentum Bonus
                 if not GridUtils.is_turn(last_dir, new_dir) and robot["momentum"] > 0:
-                    move_cost *= max(0.65, 1.0 - robot["momentum"] * 0.06)  # กลับไปค่าเดิม
+                    move_cost *= max(0.65, 1.0 - robot["momentum"] * 0.06)
                 
                 # 8. Goal Proximity Bonus
                 dist_to_goal = GridUtils.manhattan(nxt, goal)
