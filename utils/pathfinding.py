@@ -233,19 +233,19 @@ class PathFinder:
                 elif corridor_score <= 2:
                     move_cost *= 1.3
                 
-                # 6. Highway Bonus (จาก RouteAnalyzer)
+                # 6. Highway Bonus (จาก RouteAnalyzer) - ลดลงเพื่อไม่ให้อ้อมมาก
                 if self.route_analyzer:
                     highway_bonus = self.route_analyzer.get_highway_bonus(nxt)
                     if highway_bonus > 0:
-                        move_cost *= max(0.6, 1.0 - highway_bonus * 0.08)
+                        move_cost *= max(0.85, 1.0 - highway_bonus * 0.03)  # ลดจาก 0.08 -> 0.03
                     
-                    # Main Corridor Bonus
+                    # Main Corridor Bonus (ลดลง)
                     if self.route_analyzer.is_on_main_corridor(nxt):
-                        move_cost *= 0.75
+                        move_cost *= 0.92  # ลดจาก 0.75 -> 0.92
                 
-                # 7. Momentum Bonus (เพิ่มให้เดินตรงมากขึ้น)
+                # 7. Momentum Bonus
                 if not GridUtils.is_turn(last_dir, new_dir) and robot["momentum"] > 0:
-                    move_cost *= max(0.55, 1.0 - robot["momentum"] * 0.08)
+                    move_cost *= max(0.65, 1.0 - robot["momentum"] * 0.06)  # กลับไปค่าเดิม
                 
                 # 8. Goal Proximity Bonus
                 dist_to_goal = GridUtils.manhattan(nxt, goal)
@@ -257,6 +257,7 @@ class PathFinder:
                     priority = self.get_robot_priority(robot)
                     if priority < 2000:
                         move_cost *= 1.5
+
 
                 
                 new_g = g + move_cost
