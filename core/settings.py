@@ -9,7 +9,7 @@ class Settings:
         self.BASE_DIR = os.path.dirname(os.path.abspath(__file__))
         self.PATTERN_DIR = os.path.join(self.BASE_DIR, "../data/pattern_1.json")
         self.DEADLOCK_MODEL_PATH = os.path.join(self.BASE_DIR, "../models/deadlock_predictor.pkl")
-        self.LOG_DIR = os.path.join(self.BASE_DIR, "logs")
+        self.LOG_DIR = os.path.join(self.BASE_DIR, "../logs")
 
         # Grid Settings (can be overridden by JSON config)
         self.ROWS = 26

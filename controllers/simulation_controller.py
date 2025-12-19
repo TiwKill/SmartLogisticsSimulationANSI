@@ -16,6 +16,7 @@ from utils.display_manager import DisplayManager, SimulationRenderer
 from utils.pathfinding import PathFinder
 from utils.deadlock_resolver import DeadlockResolver
 from utils.robot_manager import RobotManager
+from utils.route_analyzer import RouteAnalyzer, RouteCache
 
 
 class SimulationController:
@@ -52,12 +53,25 @@ class SimulationController:
 
     def _init_modules(self):
         """Initialize all sub-modules"""
+        # Initialize Route Analyzer (auto-computed routes)
+        self.route_analyzer = RouteAnalyzer(
+            self.obstacles,
+            self.corridor_map,
+            self.packages
+        )
+        
+        # Initialize Route Cache
+        self.route_cache = RouteCache(max_size=500)
+        
+        # PathFinder with route optimization
         self.pathfinder = PathFinder(
             self.obstacles, 
             self.corridor_map, 
             self.robots, 
             self.packages,
-            self.deadlock_model
+            self.deadlock_model,
+            self.route_analyzer,
+            self.route_cache
         )
         
         self.deadlock_resolver = DeadlockResolver(

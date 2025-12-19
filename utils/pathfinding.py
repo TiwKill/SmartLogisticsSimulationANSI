@@ -11,12 +11,14 @@ from utils.grid_utils import GridUtils
 class PathFinder:
     """จัดการการหาเส้นทางด้วย A* Algorithm"""
     
-    def __init__(self, obstacles, corridor_map, robots, packages, deadlock_model=None):
+    def __init__(self, obstacles, corridor_map, robots, packages, deadlock_model=None, route_analyzer=None, route_cache=None):
         self.obstacles = obstacles
         self.corridor_map = corridor_map
         self.robots = robots
         self.packages = packages
         self.deadlock_model = deadlock_model
+        self.route_analyzer = route_analyzer
+        self.route_cache = route_cache
     
     def predict_future_positions(self, robot, steps=3):
         """ทำนายตำแหน่งของ robot อื่นในอนาคต"""
@@ -121,9 +123,17 @@ class PathFinder:
         return base + wait_bonus + dist_bonus + momentum_bonus
 
     def smart_astar(self, start, goal, blocked, robot):
-        """A* Algorithm พร้อม Enhanced Cost Calculation"""
+        """A* Algorithm พร้อม Enhanced Cost Calculation และ Route Optimization"""
         if start == goal:
             return []
+        
+        # ลองใช้ cached route ก่อน (ถ้ามี)
+        if self.route_cache:
+            cached_path = self.route_cache.get(start, goal, robot.get("state", "IDLE"))
+            if cached_path:
+                # ตรวจสอบว่า cached path ยังใช้ได้ (ไม่มี blocked positions)
+                if not any(p in blocked for p in cached_path):
+                    return cached_path
         
         # ทำนายตำแหน่งอนาคตของหุ่นยนต์อื่น
         future_predictions = self.predict_future_positions(robot, steps=5)
@@ -136,7 +146,13 @@ class PathFinder:
             _, g, current, last_dir, path = heapq.heappop(open_set)
             
             if current == goal:
-                return path + [current] if current != start else path
+                result_path = path + [current] if current != start else path
+                
+                # Cache the result
+                if self.route_cache and len(result_path) > 0:
+                    self.route_cache.put(start, goal, robot.get("state", "IDLE"), result_path)
+                
+                return result_path
             
             state = (current, last_dir)
             if state in came_from:
@@ -144,8 +160,16 @@ class PathFinder:
             came_from[state] = True
             
             directions = [(-1, 0), (1, 0), (0, -1), (0, 1)]
-            # เรียงลำดับทิศทางตาม momentum
-            if last_dir != (0, 0):
+            
+            # ใช้ RouteAnalyzer เพื่อหา preferred direction
+            if self.route_analyzer:
+                preferred = self.route_analyzer.get_preferred_direction(current, goal, robot.get("state", "IDLE"))
+                if preferred != (0, 0):
+                    # เรียงลำดับ: preferred > momentum > อื่นๆ
+                    directions.sort(key=lambda d: 0 if d == preferred else (1 if d == last_dir else 2))
+                elif last_dir != (0, 0):
+                    directions.sort(key=lambda d: 0 if d == last_dir else 1)
+            elif last_dir != (0, 0):
                 directions.sort(key=lambda d: 0 if d == last_dir else 1)
             
             for dr, dc in directions:
@@ -160,6 +184,7 @@ class PathFinder:
                     continue
                 if nxt != goal and not self.can_enter_pickup(robot, nxt):
                     continue
+
                 
                 # =========================
                 # ENHANCED COST CALCULATION
@@ -193,9 +218,9 @@ class PathFinder:
                     except Exception:
                         pass
                 
-                # 3. Turn Penalty
+                # 3. Turn Penalty (ลดลงเพื่อให้เดินนิ่มขึ้น)
                 if GridUtils.is_turn(last_dir, new_dir) and last_dir != (0, 0):
-                    move_cost += settings.TURN_PENALTY
+                    move_cost += settings.TURN_PENALTY * 0.7  # ลด penalty
                 
                 # 4. Dynamic Traffic Cost (ใช้การทำนายอนาคต)
                 dynamic_traffic = self.get_dynamic_traffic_cost(nxt, robot, future_predictions)
@@ -208,20 +233,31 @@ class PathFinder:
                 elif corridor_score <= 2:
                     move_cost *= 1.3
                 
-                # 6. Momentum Bonus
-                if not GridUtils.is_turn(last_dir, new_dir) and robot["momentum"] > 0:
-                    move_cost *= max(0.65, 1.0 - robot["momentum"] * 0.06)
+                # 6. Highway Bonus (จาก RouteAnalyzer)
+                if self.route_analyzer:
+                    highway_bonus = self.route_analyzer.get_highway_bonus(nxt)
+                    if highway_bonus > 0:
+                        move_cost *= max(0.6, 1.0 - highway_bonus * 0.08)
+                    
+                    # Main Corridor Bonus
+                    if self.route_analyzer.is_on_main_corridor(nxt):
+                        move_cost *= 0.75
                 
-                # 7. Goal Proximity Bonus
+                # 7. Momentum Bonus (เพิ่มให้เดินตรงมากขึ้น)
+                if not GridUtils.is_turn(last_dir, new_dir) and robot["momentum"] > 0:
+                    move_cost *= max(0.55, 1.0 - robot["momentum"] * 0.08)
+                
+                # 8. Goal Proximity Bonus
                 dist_to_goal = GridUtils.manhattan(nxt, goal)
                 if dist_to_goal <= 3:
                     move_cost *= 0.9
                 
-                # 8. Narrow Passage Detection
+                # 9. Narrow Passage Detection
                 if self.is_narrow_passage(nxt):
                     priority = self.get_robot_priority(robot)
                     if priority < 2000:
                         move_cost *= 1.5
+
                 
                 new_g = g + move_cost
                 new_state = (nxt, new_dir)
