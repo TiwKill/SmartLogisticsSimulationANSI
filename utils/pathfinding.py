@@ -1,17 +1,18 @@
 """
 Pathfinding Module
-จัดการการหาเส้นทาง A* และ Path Planning สำหรับ Smart Logistics Simulation
+จัดการการหาเส้นทาง Time-Space A* สำหรับ Smart Logistics Simulation
 """
 
-import heapq
 from core.settings import settings
 from utils.grid_utils import GridUtils
+from utils.time_space_astar import TimeSpaceAStar, ReservationTable
 
 
 class PathFinder:
-    """จัดการการหาเส้นทางด้วย A* Algorithm"""
+    """จัดการการหาเส้นทางด้วย Time-Space A* Algorithm"""
     
-    def __init__(self, obstacles, corridor_map, robots, packages, deadlock_model=None, route_analyzer=None, route_cache=None):
+    def __init__(self, obstacles, corridor_map, robots, packages, 
+                 deadlock_model=None, route_analyzer=None, route_cache=None):
         self.obstacles = obstacles
         self.corridor_map = corridor_map
         self.robots = robots
@@ -19,6 +20,36 @@ class PathFinder:
         self.deadlock_model = deadlock_model
         self.route_analyzer = route_analyzer
         self.route_cache = route_cache
+        
+        # Time-Space A* components
+        self.reservation_table = ReservationTable()
+        self.ts_astar = TimeSpaceAStar(
+            obstacles=obstacles,
+            corridor_map=corridor_map,
+            robots=robots,
+            packages=packages,
+            reservation_table=self.reservation_table,
+            deadlock_model=deadlock_model,
+            route_analyzer=route_analyzer,
+            route_cache=route_cache
+        )
+        
+        # Current simulation step (ต้อง update ทุก step)
+        self.current_step = 0
+    
+    def update_step(self, step):
+        """อัพเดท current step และล้าง old reservations"""
+        self.current_step = step
+        self.reservation_table.clear_old(step)
+    
+    def reserve_robot_path(self, robot, path):
+        """จอง path สำหรับ robot"""
+        if path:
+            self.reservation_table.reserve_path(robot["id"], path, self.current_step)
+    
+    def clear_robot_reservations(self, robot):
+        """ล้างการจองของ robot"""
+        self.reservation_table.clear_robot(robot["id"])
     
     def predict_future_positions(self, robot, steps=3):
         """ทำนายตำแหน่งของ robot อื่นในอนาคต"""
@@ -37,14 +68,12 @@ class PathFinder:
         """คำนวณ traffic cost แบบ dynamic รวมทั้งทำนายอนาคต"""
         cost = 0.0
         
-        # ตรวจสอบว่าตำแหน่งนี้จะมีหุ่นยนต์อื่นมาชนหรือไม่
         for rid, future_positions in future_predictions.items():
             if rid == robot["id"]:
                 continue
             
             for step_idx, future_pos in enumerate(future_positions):
                 if future_pos == pos:
-                    # ยิ่งใกล้ในอนาคต penalty ยิ่งสูง
                     cost += 10.0 / (step_idx + 1)
                 else:
                     dist = GridUtils.manhattan(pos, future_pos)
@@ -69,13 +98,11 @@ class PathFinder:
         r, c = pos
         open_count = 0
         
-        # นับจำนวนทิศทางที่เปิด
         for dr, dc in [(-1, 0), (1, 0), (0, -1), (0, 1)]:
             nr, nc = r + dr, c + dc
             if GridUtils.in_bounds(nr, nc) and (nr, nc) not in self.obstacles:
                 open_count += 1
         
-        # ถ้าเปิดแค่ 2 ทาง = ทางแคบ
         return open_count <= 2
 
     def can_enter_dropoff(self, robot, pos):
@@ -123,179 +150,24 @@ class PathFinder:
         return base + wait_bonus + dist_bonus + momentum_bonus
 
     def smart_astar(self, start, goal, blocked, robot):
-        """A* Algorithm พร้อม Hybrid Route System
-        - ใช้ Route System เมื่อไม่ติดขัด (wait_count == 0)
-        - Switch เป็นแบบเดิมเมื่อติดขัด (wait_count > 0)
+        """Smart A* Algorithm with Toggle
+        
+        ใช้ Time-Space A* หรือ Smart Hybrid ตาม settings.USE_TIME_SPACE_ASTAR
+        - Time-Space A*: หลีกเลี่ยงการชนในมิติเวลา, สามารถ WAIT ได้
+        - Smart Hybrid: เร็วกว่า, ใช้ route optimization
         """
-        if start == goal:
-            return []
-        
-        # ตรวจสอบว่า robot ติดขัดหรือไม่
-        is_stuck = robot.get("wait_count", 0) > 0
-        use_route_system = self.route_analyzer and not is_stuck
-        
-        # ลองใช้ cached route ก่อน (ถ้ามี และไม่ติดขัด)
-        if self.route_cache and not is_stuck:
-            cached_path = self.route_cache.get(start, goal, robot.get("state", "IDLE"))
-            if cached_path:
-                # ตรวจสอบว่า cached path ยังใช้ได้ (ไม่มี blocked positions)
-                if not any(p in blocked for p in cached_path):
-                    return cached_path
-        
-        # ถ้าติดขัด ให้ invalidate cache สำหรับ position นี้
-        if is_stuck and self.route_cache:
-            self.route_cache.invalidate([start])
-        
-        # ทำนายตำแหน่งอนาคตของหุ่นยนต์อื่น
-        future_predictions = self.predict_future_positions(robot, steps=5)
-        
-        open_set = [(0, 0, start, robot["last_dir"], [])]
-        came_from = {}
-        g_score = {(start, robot["last_dir"]): 0}
-        
-        while open_set:
-            _, g, current, last_dir, path = heapq.heappop(open_set)
+        if settings.USE_TIME_SPACE_ASTAR:
+            # Time-Space A* mode
+            path = self.ts_astar.find_path(start, goal, self.current_step, robot, blocked)
             
-            if current == goal:
-                result_path = path + [current] if current != start else path
-                
-                # Cache the result (เฉพาะเมื่อไม่ติดขัด)
-                if self.route_cache and len(result_path) > 0 and not is_stuck:
-                    self.route_cache.put(start, goal, robot.get("state", "IDLE"), result_path)
-                
-                return result_path
+            # จอง path ถ้าหาเจอ
+            if path:
+                self.reserve_robot_path(robot, path)
             
-            state = (current, last_dir)
-            if state in came_from:
-                continue
-            came_from[state] = True
-            
-            directions = [(-1, 0), (1, 0), (0, -1), (0, 1)]
-            
-            # ใช้ RouteAnalyzer เฉพาะเมื่อไม่ติดขัด
-            if use_route_system:
-                preferred = self.route_analyzer.get_preferred_direction(current, goal, robot.get("state", "IDLE"))
-                if preferred != (0, 0):
-                    # เรียงลำดับ: preferred > momentum > อื่นๆ
-                    directions.sort(key=lambda d: 0 if d == preferred else (1 if d == last_dir else 2))
-                elif last_dir != (0, 0):
-                    directions.sort(key=lambda d: 0 if d == last_dir else 1)
-            elif last_dir != (0, 0):
-                # แบบเดิม: เรียงตาม momentum
-                directions.sort(key=lambda d: 0 if d == last_dir else 1)
-            
-            for dr, dc in directions:
-                nr, nc = current[0] + dr, current[1] + dc
-                nxt = (nr, nc)
-                new_dir = (dr, dc)
-                
-                if not GridUtils.in_bounds(nr, nc) or nxt in blocked:
-                    continue
-                
-                if nxt != goal and not self.can_enter_dropoff(robot, nxt):
-                    continue
-                if nxt != goal and not self.can_enter_pickup(robot, nxt):
-                    continue
-
-                
-                # =========================
-                # ENHANCED COST CALCULATION
-                # =========================
-                move_cost = 1.0
-                
-                # 1. Robot-specific bias (ป้องกันการเลือกทางเดียวกัน)
-                robot_bias = (robot["id"] % 3) * 0.15
-                move_cost += robot_bias
-                
-                # 2. AI Deadlock Prediction
-                risk = 0.0
-                wait = robot.get("wait_count", 0)
-                robot_state = robot.get("state")
-                
-                if wait >= 5 and robot_state != "IDLE" and self.deadlock_model:
-                    try:
-                        features = self.build_deadlock_features(robot, current, nxt)
-                        risk = self.deadlock_model.predict_proba(features)[0][1]
-                        
-                        AI_WEIGHT = 2.0
-                        AI_MAX_PENALTY = 1.5
-                        
-                        penalty = min(risk * AI_WEIGHT, AI_MAX_PENALTY)
-                        
-                        # Corridor bias: ให้ทิศเดิม penalty ต่ำลง
-                        if new_dir == robot.get("last_dir"):
-                            penalty *= 0.3
-                        
-                        move_cost += penalty
-                    except Exception:
-                        pass
-                
-                # 3. Turn Penalty (ลดลงเพื่อให้เดินนิ่มขึ้น)
-                if GridUtils.is_turn(last_dir, new_dir) and last_dir != (0, 0):
-                    move_cost += settings.TURN_PENALTY * 0.7  # ลด penalty
-                
-                # 4. Dynamic Traffic Cost (ใช้การทำนายอนาคต)
-                dynamic_traffic = self.get_dynamic_traffic_cost(nxt, robot, future_predictions)
-                move_cost += dynamic_traffic * 0.15
-                
-                # 5. Corridor Bonus
-                corridor_score = self.corridor_map.get(nxt, 0)
-                if corridor_score >= 6:
-                    move_cost *= settings.CORRIDOR_BONUS
-                elif corridor_score <= 2:
-                    move_cost *= 1.3
-                
-                # 6. Highway Bonus (จาก RouteAnalyzer) - ใช้เฉพาะเมื่อไม่ติดขัด
-                if use_route_system:
-                    highway_bonus = self.route_analyzer.get_highway_bonus(nxt)
-                    if highway_bonus > 0:
-                        move_cost *= max(0.85, 1.0 - highway_bonus * 0.03)
-                    
-                    # Main Corridor Bonus
-                    if self.route_analyzer.is_on_main_corridor(nxt):
-                        move_cost *= 0.92
-                
-                # 7. Momentum Bonus
-                if not GridUtils.is_turn(last_dir, new_dir) and robot["momentum"] > 0:
-                    move_cost *= max(0.65, 1.0 - robot["momentum"] * 0.06)
-                
-                # 8. Goal Proximity Bonus
-                dist_to_goal = GridUtils.manhattan(nxt, goal)
-                if dist_to_goal <= 3:
-                    move_cost *= 0.9
-                
-                # 9. Narrow Passage Detection
-                if self.is_narrow_passage(nxt):
-                    priority = self.get_robot_priority(robot)
-                    if priority < 2000:
-                        move_cost *= 1.5
-
-
-                
-                new_g = g + move_cost
-                new_state = (nxt, new_dir)
-                
-                if new_state not in g_score or new_g < g_score[new_state]:
-                    g_score[new_state] = new_g
-                    h = GridUtils.manhattan(nxt, goal)
-                    
-                    # Heuristic Improvement
-                    goal_dir = (
-                        1 if goal[0] > nxt[0] else (-1 if goal[0] < nxt[0] else 0),
-                        1 if goal[1] > nxt[1] else (-1 if goal[1] < nxt[1] else 0)
-                    )
-                    
-                    if new_dir[0] == goal_dir[0] or new_dir[1] == goal_dir[1]:
-                        h *= 0.92
-                    
-                    if robot["momentum"] >= 3 and new_dir == last_dir:
-                        h *= 0.95
-                    
-                    f = new_g + h
-                    new_path = path + [nxt]
-                    heapq.heappush(open_set, (f, new_g, nxt, new_dir, new_path))
-        
-        return []
+            return path
+        else:
+            # Smart Hybrid mode (fallback A* with route optimization)
+            return self.ts_astar._fallback_astar(start, goal, robot, blocked)
 
     def smooth_path(self, path, robot):
         """

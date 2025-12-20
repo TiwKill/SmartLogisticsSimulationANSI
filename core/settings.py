@@ -48,4 +48,10 @@ class Settings:
         self.CONGESTION_RADIUS = 3      # รัศมีตรวจสอบความหนาแน่น
         self.CONGESTION_THRESHOLD = 3.0 # ค่าความหนาแน่นที่ถือว่าติดขัด
 
+        # Time-Space A* Settings
+        self.USE_TIME_SPACE_ASTAR = False  # True = Time-Space A*, False = Smart Hybrid
+        self.TIME_HORIZON = 30           # จำนวน timesteps สูงสุดที่จะ plan
+        self.MAX_WAIT_ACTIONS = 5        # จำนวนครั้งสูงสุดที่ WAIT ติดต่อกัน
+        self.WAIT_COST = 1.2             # cost ของการ WAIT (สูงกว่า MOVE เล็กน้อย)
+
 settings = Settings()

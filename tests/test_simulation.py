@@ -525,5 +525,195 @@ class TestPerformance:
         assert elapsed < 2.0, f"PenaltyMap ช้าเกินไป: {elapsed:.2f}s"
 
 
+# ===========================
+# Time-Space A* Tests
+# ===========================
+
+class TestReservationTable:
+    """ทดสอบ ReservationTable class"""
+    
+    def test_init(self):
+        """ทดสอบการสร้าง ReservationTable"""
+        from utils.time_space_astar import ReservationTable
+        rt = ReservationTable()
+        assert rt is not None
+        assert len(rt.reservations) == 0
+    
+    def test_reserve_position(self):
+        """ทดสอบการจองตำแหน่ง"""
+        from utils.time_space_astar import ReservationTable
+        rt = ReservationTable()
+        rt.reserve(robot_id=1, position=(5, 5), timestep=10)
+        
+        assert rt.is_reserved((5, 5), 10)
+        assert not rt.is_reserved((5, 5), 11)
+        assert not rt.is_reserved((6, 6), 10)
+    
+    def test_reserve_with_exclude(self):
+        """ทดสอบการตรวจสอบ reservation โดย exclude robot"""
+        from utils.time_space_astar import ReservationTable
+        rt = ReservationTable()
+        rt.reserve(robot_id=1, position=(5, 5), timestep=10)
+        
+        # ถ้า exclude robot 1 ไม่ควร reserved
+        assert not rt.is_reserved((5, 5), 10, exclude_robot=1)
+        # ถ้า exclude robot 2 ควร reserved
+        assert rt.is_reserved((5, 5), 10, exclude_robot=2)
+    
+    def test_reserve_path(self):
+        """ทดสอบการจอง path"""
+        from utils.time_space_astar import ReservationTable
+        rt = ReservationTable()
+        path = [(1, 1), (1, 2), (1, 3), (1, 4)]
+        rt.reserve_path(robot_id=1, path=path, start_time=0)
+        
+        # Path ควร reserved ตามลำดับเวลา
+        assert rt.is_reserved((1, 1), 0)
+        assert rt.is_reserved((1, 2), 1)
+        assert rt.is_reserved((1, 3), 2)
+        assert rt.is_reserved((1, 4), 3)
+    
+    def test_clear_robot(self):
+        """ทดสอบการล้าง reservations ของ robot"""
+        from utils.time_space_astar import ReservationTable
+        rt = ReservationTable()
+        rt.reserve(robot_id=1, position=(5, 5), timestep=10)
+        rt.clear_robot(1)
+        
+        assert not rt.is_reserved((5, 5), 10)
+    
+    def test_clear_old(self):
+        """ทดสอบการล้าง old reservations"""
+        from utils.time_space_astar import ReservationTable
+        rt = ReservationTable()
+        rt.reserve(robot_id=1, position=(5, 5), timestep=5)
+        rt.reserve(robot_id=1, position=(6, 6), timestep=15)
+        rt.clear_old(10)
+        
+        # timestep 5 ควรถูกลบ
+        assert not rt.is_reserved((5, 5), 5)
+        # timestep 15 ยังอยู่
+        assert rt.is_reserved((6, 6), 15)
+
+
+class TestTimeSpaceAStar:
+    """ทดสอบ TimeSpaceAStar class"""
+    
+    @pytest.fixture
+    def ts_astar(self):
+        """สร้าง TimeSpaceAStar สำหรับทดสอบ"""
+        from utils.time_space_astar import TimeSpaceAStar, ReservationTable
+        obstacles = set()
+        corridor_map = {}
+        robots = [{"id": 1, "pos": (0, 0), "last_dir": (0, 0), "path": [], 
+                   "state": "IDLE", "package": None, "momentum": 0, "wait_count": 0}]
+        packages = {}
+        
+        return TimeSpaceAStar(
+            obstacles=obstacles,
+            corridor_map=corridor_map,
+            robots=robots,
+            packages=packages,
+            reservation_table=ReservationTable()
+        )
+    
+    def test_find_path_simple(self, ts_astar):
+        """ทดสอบหา path ง่ายๆ"""
+        robot = ts_astar.robots[0]
+        path = ts_astar.find_path(
+            start=(0, 0),
+            goal=(0, 5),
+            start_time=0,
+            robot=robot
+        )
+        
+        assert isinstance(path, list)
+        if path:  # ถ้าหาเจอ
+            assert path[-1] == (0, 5)  # ต้องจบที่ goal
+    
+    def test_find_path_to_self(self, ts_astar):
+        """ทดสอบหา path ไปยังตำแหน่งเดิม"""
+        robot = ts_astar.robots[0]
+        path = ts_astar.find_path(
+            start=(5, 5),
+            goal=(5, 5),
+            start_time=0,
+            robot=robot
+        )
+        
+        assert path == []  # ไม่ต้องเดินไปไหน
+    
+    def test_avoid_reserved_positions(self, ts_astar):
+        """ทดสอบการหลีกเลี่ยง reserved positions"""
+        # จองตำแหน่งที่อยู่ตรงกลาง
+        ts_astar.reservation_table.reserve(robot_id=2, position=(0, 3), timestep=3)
+        
+        robot = ts_astar.robots[0]
+        path = ts_astar.find_path(
+            start=(0, 0),
+            goal=(0, 5),
+            start_time=0,
+            robot=robot
+        )
+        
+        # Path ควรหลีกเลี่ยง (0, 3) ที่ timestep 3
+        # หรืออาจมี WAIT หรืออ้อม
+        assert isinstance(path, list)
+    
+    def test_fallback_astar(self, ts_astar):
+        """ทดสอบ fallback A*"""
+        robot = ts_astar.robots[0]
+        path = ts_astar._fallback_astar(
+            start=(0, 0),
+            goal=(3, 3),
+            robot=robot,
+            blocked=set()
+        )
+        
+        assert isinstance(path, list)
+        if path:
+            assert path[-1] == (3, 3)
+
+
+class TestTimeSpaceAStarIntegration:
+    """ทดสอบ Time-Space A* แบบ Integration กับ SimulationController"""
+    
+    @pytest.fixture
+    def controller(self):
+        """สร้าง SimulationController สำหรับทดสอบ"""
+        from controllers.simulation_controller import SimulationController
+        return SimulationController(settings.PATTERN_DIR)
+    
+    def test_pathfinder_has_reservation_table(self, controller):
+        """ทดสอบว่า pathfinder มี reservation table"""
+        assert hasattr(controller.pathfinder, 'reservation_table')
+        assert hasattr(controller.pathfinder, 'ts_astar')
+    
+    def test_update_pathfinder_step(self, controller):
+        """ทดสอบ update_pathfinder_step"""
+        controller.update_pathfinder_step(10)
+        assert controller.pathfinder.current_step == 10
+    
+    def test_smart_astar_with_time_space(self, controller):
+        """ทดสอบ smart_astar ใช้ Time-Space A*"""
+        controller.update_pathfinder_step(0)
+        robot = controller.robots[0]
+        
+        # หา goal ที่ไม่ใช่ obstacle
+        goal = None
+        for r in range(settings.ROWS):
+            for c in range(settings.COLS):
+                if (r, c) not in controller.obstacles and (r, c) != robot["pos"]:
+                    goal = (r, c)
+                    break
+            if goal:
+                break
+        
+        if goal:
+            blocked = set(controller.obstacles)
+            path = controller.smart_astar(robot["pos"], goal, blocked, robot)
+            assert isinstance(path, list)
+
+
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

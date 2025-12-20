@@ -259,6 +259,18 @@ class SimulationController:
     def is_narrow_passage(self, pos):
         return self.pathfinder.is_narrow_passage(pos)
 
+    def update_pathfinder_step(self, step):
+        """อัพเดท current step ให้ pathfinder สำหรับ Time-Space A*"""
+        self.pathfinder.update_step(step)
+
+    def reserve_robot_path(self, robot, path):
+        """จอง path สำหรับ robot ใน reservation table"""
+        self.pathfinder.reserve_robot_path(robot, path)
+
+    def clear_robot_reservations(self, robot):
+        """ล้าง reservations ของ robot"""
+        self.pathfinder.clear_robot_reservations(robot)
+
     # DeadlockResolver delegators
     def get_robot_by_id(self, robot_id):
         return self.deadlock_resolver.get_robot_by_id(robot_id)

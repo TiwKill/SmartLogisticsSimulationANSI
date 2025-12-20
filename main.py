@@ -45,6 +45,9 @@ def main():
     while True:
         step += 1
         
+        # Update pathfinder step for Time-Space A*
+        sim.update_pathfinder_step(step)
+        
         # 1. Maintenance & Cleanup
         sim.fix_robot_states()
         
@@ -471,5 +474,4 @@ def main():
         time.sleep(settings.SLEEP)
 
 if __name__ == "__main__":
-    # for i in range(6):
     main()
